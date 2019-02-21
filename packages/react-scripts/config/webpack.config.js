@@ -77,6 +77,11 @@ module.exports = function(webpackEnv) {
 
   // common function to get style loaders
   const getStyleLoaders = (cssOptions, preProcessor) => {
+    let postCssConfig = {};
+    try {
+      postCssConfig = require(paths.postCssConfig);
+    } catch {}
+
     const loaders = [
       isEnvDevelopment && require.resolve('style-loader'),
       isEnvProduction && {
@@ -100,6 +105,8 @@ module.exports = function(webpackEnv) {
           // https://github.com/facebook/create-react-app/issues/2677
           ident: 'postcss',
           plugins: () => [
+            // for now hack support plugins. not sure why config is not loaded byitself
+            ...(postCssConfig.plugins || []),
             require('postcss-flexbugs-fixes'),
             require('postcss-preset-env')({
               autoprefixer: {
@@ -122,6 +129,32 @@ module.exports = function(webpackEnv) {
     }
     return loaders;
   };
+
+  // allow aliases and shimms
+  let extraAliases = {};
+  try {
+    if (useTypeScript) {
+      const tspaths = require(paths.appTsConfig).compilerOptions.paths || {};
+      const baseUrl = require(paths.appTsConfig).compilerOptions.baseUrl || '.';
+
+      for (let name in tspaths) {
+        let mappto = tspaths[name][0];
+
+        if (name.slice(-2) === '/*' && mappto.slice(-2) === '/*') {
+          name = name.substr(0, name.length - 2);
+          mappto = mappto.substr(0, mappto.length - 2);
+        } else {
+          name = name + '$';
+        }
+        extraAliases[name] = path.resolve(paths.appPath, baseUrl, mappto);
+      }
+    }
+  } catch {}
+
+  let globalShimming = {};
+  try {
+    globalShimming = require(paths.appPackageJson).globalShimming || {};
+  } catch {}
 
   return {
     mode: isEnvProduction ? 'production' : isEnvDevelopment && 'development',
@@ -275,6 +308,7 @@ module.exports = function(webpackEnv) {
         // Support React Native Web
         // https://www.smashingmagazine.com/2016/08/a-glimpse-into-the-future-with-react-native-for-web/
         'react-native': 'react-native-web',
+        ...extraAliases,
       },
       plugins: [
         // Adds support for installing with Plug'n'Play, leading to faster installs and adding
@@ -329,11 +363,30 @@ module.exports = function(webpackEnv) {
           // match the requirements. When no loader matches it will fall
           // back to the "file" loader at the end of the loader list.
           oneOf: [
+            {
+              test: [/\.inline\.svg$/],
+              use: [
+                {
+                  loader: require.resolve('svg-inline-loader'),
+                },
+                {
+                  loader: require.resolve('svgo-loader'),
+                  options: {
+                    plugins: [
+                      { removeTitle: true },
+                      { prefixIds: true },
+                      { removeXMLNS: true },
+                      { convertShapeToPath: false },
+                    ],
+                  },
+                },
+              ],
+            },
             // "url" loader works like "file" loader except that it embeds assets
             // smaller than specified limit in bytes as data URLs to avoid requests.
             // A missing `test` is equivalent to a match.
             {
-              test: [/\.bmp$/, /\.gif$/, /\.jpe?g$/, /\.png$/],
+              test: [/\.bmp$/, /\.gif$/, /\.jpe?g$/, /\.png$/, /\.svg$/],
               loader: require.resolve('url-loader'),
               options: {
                 limit: 10000,
@@ -390,6 +443,13 @@ module.exports = function(webpackEnv) {
                 cacheCompression: isEnvProduction,
                 compact: isEnvProduction,
               },
+            },
+            {
+              test: /\.yaml$/,
+              use: [
+                require.resolve('json-loader'),
+                require.resolve('yaml-loader'),
+              ],
             },
             // Process any JS outside of the app with Babel.
             // Unlike the application JS, we only compile the standard ES features.
@@ -633,6 +693,8 @@ module.exports = function(webpackEnv) {
           // The formatter is invoked directly in WebpackDevServerUtils during development
           formatter: isEnvProduction ? typescriptFormatter : undefined,
         }),
+      // allow to define global shims
+      new webpack.ProvidePlugin(globalShimming),
     ].filter(Boolean),
     // Some libraries import Node modules but don't use them in the browser.
     // Tell Webpack to provide empty mocks for them so importing them works.
